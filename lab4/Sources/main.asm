@@ -1,0 +1,226 @@
+;****************************************************************
+;* COE538 Lab 4: Motor Control and Hardware Timer for eebot
+;* Target MCU: MC9S12C32
+;* This program demonstrates motor control and a three-stage 
+;* timer alarm on the LCD.
+;****************************************************************
+
+;-------------
+; Definitions
+;-------------
+PORTA       EQU     $0000
+DDRA        EQU     $0002
+PORTB       EQU     $0001
+DDRB        EQU     $0003
+PTT         EQU     $0240
+DDRT        EQU     $0242
+PTJ         EQU     $0268
+DDRJ        EQU     $026A
+
+TSCR1       EQU     $0046
+TSCR2       EQU     $004D
+TFLG2       EQU     $004F
+
+; For LCD (eebot specific)
+LCD_DAT     EQU     PORTB
+LCD_CNTR    EQU     PTJ
+LCD_E       EQU     $80     ; Mask for PJ7
+LCD_RS      EQU     $40     ; Mask for PJ6
+
+; For Timer Alarms
+OneSec      EQU     23      ; ~1 second delay (at 23Hz)
+TwoSec      EQU     46      ; ~2 second delay (at 23Hz)
+
+;-----------
+; RAM Area
+;-----------
+            ORG     $3800   ; RAM Start for MC9S12C32
+TOF_COUNTER RMB     1       ; Timer Overflow Counter
+AT_DEMO     RMB     1       ; Alarm time for demo
+
+;-----------
+; Code Area
+;-----------
+            ORG     $4000
+Entry:
+_Startup:
+            LDS     #$0FFF  ; Initialize Stack Pointer for C32
+
+            ; --- Hardware Initialization ---
+            BSET    DDRJ, #(LCD_E | LCD_RS) ; Set PJ6, PJ7 as output for LCD control
+            BSET    DDRB, #$FF             ; Set PORTB as output for LCD data
+            BSET    DDRA, %00000011        ; Set PA0, PA1 as output for motor direction
+            BSET    DDRT, %00110000        ; Set PT4, PT5 as output for motor speed
+            
+            JSR     initLCD
+            JSR     clrLCD
+            JSR     ENABLE_TOF
+            CLI                 ; Enable global interrupts
+
+; --- Main Alarm Program ---
+            LDAA    #'A'
+            JSR     putcLCD     ; Display 'A'
+
+            LDAA    TOF_COUNTER
+            ADDA    #OneSec     ; Set alarm for 1 second
+            STAA    AT_DEMO
+
+CHK_DELAY_1:
+            LDAA    TOF_COUNTER
+            CMPA    AT_DEMO
+            BEQ     A1
+            BRA     CHK_DELAY_1
+
+A1:
+            LDAA    #'B'
+            JSR     putcLCD     ; Display 'B'
+
+            LDAA    AT_DEMO
+            ADDA    #TwoSec     ; Set alarm for another 2 seconds
+            STAA    AT_DEMO
+
+CHK_DELAY_2:
+            LDAA    TOF_COUNTER
+            CMPA    AT_DEMO
+            BEQ     A2
+            BRA     CHK_DELAY_2
+A2:
+            LDAA    #'C'
+            JSR     putcLCD     ; Display 'C' (forever)
+            
+EndLoop:
+            BRA     EndLoop     ; Program ends here
+
+;*************************
+;* Motor Control Routines
+;*************************
+; --- Motor Power ---
+STARON:
+            BSET    PTT, #%00100000  ; Turn on Starboard motor (PT5)
+            RTS
+
+STAROFF:
+            BCLR    PTT, #%00100000  ; Turn off Starboard motor (PT5)
+            RTS
+
+PORTON:
+            BSET    PTT, #%00010000  ; Turn on Port motor (PT4)
+            RTS
+
+PORTOFF:
+            BCLR    PTT, #%00010000  ; Turn off Port motor (PT4)
+            RTS
+
+; --- Motor Direction ---
+STARFWD:
+            BCLR    PORTA, #%00000010 ; Starboard Forward (PA1=0)
+            RTS
+
+STARREV:
+            BSET    PORTA, #%00000010 ; Starboard Reverse (PA1=1)
+            RTS
+
+PORTFWD:
+            BCLR    PORTA, #%00000001 ; Port Forward (PA0=0)
+            RTS
+
+PORTREV:
+            BSET    PORTA, #%00000001 ; Port Reverse (PA0=1)
+            RTS
+
+;*****************************
+;* Timer Interrput Routines
+;*****************************
+ENABLE_TOF:
+            LDAA    #%10000000
+            STAA    TSCR1       ; Enable TCNT
+            STAA    TFLG2       ; Clear TOF flag by writing 1 to it
+            LDAA    #%10000100  ; Enable TOI (Timer Overflow Interrupt), prescale factor = 16
+            STAA    TSCR2
+            RTS
+
+TOF_ISR:    ; This is the Interrupt Service Routine
+            INC     TOF_COUNTER ; Increment software counter
+            LDAA    #%10000000
+            STAA    TFLG2       ; Clear TOF flag to allow next interrupt
+            RTI                 ; Return from Interrupt
+
+;***********************************
+;* LCD Subroutines (eebot specific)
+;***********************************
+initLCD:
+            LDX     #2000
+            JSR     del_1ms_X   ; Wait for more than 15ms after VCC rises to 4.5V
+            LDAA    #$28        ; Function set: 4-bit, 2-line, 5x7 dots
+            JSR     cmd2LCD
+            LDAA    #$0C        ; Display ON, Cursor OFF, Blink OFF
+            JSR     cmd2LCD
+            LDAA    #$01        ; Clear display
+            JSR     cmd2LCD
+            LDX     #2
+            JSR     del_1ms_X   ; Wait for more than 1.64ms
+            LDAA    #$06        ; Entry mode set: Increment, no shift
+            JSR     cmd2LCD
+            RTS
+
+clrLCD:
+            LDAA    #$01        ; Clear display command
+            JSR     cmd2LCD
+            LDX     #2
+            JSR     del_1ms_X   ; Wait for clear display to complete
+            RTS
+
+putcLCD:    ; Outputs character in ACCA to LCD
+            BSET    LCD_CNTR, LCD_RS ; Select Data Register (RS=1)
+            JSR     dataMov          ; Send data
+            RTS
+
+cmd2LCD:    ; Sends command in ACCA to LCD
+            BCLR    LCD_CNTR, LCD_RS ; Select Instruction Register (RS=0)
+            JSR     dataMov          ; Send data
+            RTS
+
+dataMov:    ; Sends byte in ACCA (4-bit mode)
+            PSHA
+            LSRA
+            LSRA
+            LSRA
+            LSRA                ; Send upper nibble
+            STAA    LCD_DAT
+            BSET    LCD_CNTR, LCD_E ; E = 1
+            NOP
+            BCLR    LCD_CNTR, LCD_E ; E = 0
+            PULA                ; Restore original data
+            STAA    LCD_DAT     ; Send lower nibble
+            BSET    LCD_CNTR, LCD_E ; E = 1
+            NOP
+            BCLR    LCD_CNTR, LCD_E ; E = 0
+            JSR     del_50us    ; Wait for operation to complete
+            RTS
+
+del_50us:   ; Delay of approximately 50us
+            PSHX
+            LDX     #150        ; Value depends on bus clock, adjust if needed
+del_loop:
+            NOP
+            DBNE    X, del_loop
+            PULX
+            RTS
+            
+del_1ms_X:  ; Delay of X milliseconds
+del_1ms_loop:
+            PSHX
+            LDY     #20
+            JSR     del_50us
+            PULX
+            DBNE    X, del_1ms_loop
+            RTS
+
+;*********************
+;* Interrupt Vectors
+;*********************
+            ORG     $FFDE
+            FDB     TOF_ISR     ; Timer Overflow Interrupt Vector
+
+            ORG     $FFFE
+            FDB     Entry       ; Reset Vector
