@@ -1,0 +1,158 @@
+; ***************************************************************
+; Lab 2, Assignment 2: Display Message and Hex Values on LCD
+; ***************************************************************
+            XDEF    Entry, _Startup
+            ABSENTRY Entry
+            INCLUDE 'derivative.inc'
+
+; ----------- 상수 정의 (Definitions) ---------------------------
+LCD_DAT     EQU     PTS          ; LCD 데이터 포트는 Port S
+LCD_CNTR    EQU     PORTE        ; LCD 제어 포트는 Port E
+LCD_E       EQU     %00010000    ; LCD Enable 신호는 PE4
+LCD_RS      EQU     %10000000    ; LCD RS 신호는 PE7
+
+; ----------- 변수/데이터 섹션 (Variable/Data Section) -------------
+            ORG     $3000
+VALUE1      FCB     $A5          ; 첫 번째 16진수 값
+VALUE2      FCB     $B6          ; 두 번째 16진수 값
+ASCII_BUF   RMB     5            ; 변환된 ASCII 코드 저장 공간 ("A5 B6" + NULL)
+MSG1        DC.B    'Values: ',0 ; 출력할 메시지 (0은 문자열의 끝을 의미)
+
+; ----------- 프로그램 코드 (Code Section) -------------------------
+            ORG     $4000
+Entry:
+_Startup:
+            LDS     #$4000       ; 스택 포인터 초기화
+            JSR     initLCD      ; LCD 초기화
+
+MainLoop:
+            JSR     clrLCD       ; LCD 화면 지우기
+
+            LDX     #MSG1        ; MSG1 메시지의 시작 주소를 X에 로드
+            JSR     putsLCD      ; LCD에 문자열 출력
+
+            LDAA    VALUE1       ; VALUE1($A5) 로드
+            JSR     byte2ASCII   ; 2개의 ASCII 문자로 변환하여 버퍼에 저장
+            LDX     #ASCII_BUF   ; 버퍼 주소를 X에 로드
+            JSR     putsLCD      ; 변환된 문자("A5")를 LCD에 출력
+
+            LDAA    #' '         ; 띄어쓰기 문자 출력
+            JSR     putcLCD
+
+            LDAA    VALUE2       ; VALUE2($B6) 로드
+            JSR     byte2ASCII   ; 2개의 ASCII 문자로 변환하여 버퍼에 저장
+            LDX     #ASCII_BUF   ; 버퍼 주소를 X에 로드
+            JSR     putsLCD      ; 변환된 문자("B6")를 LCD에 출력
+
+            JSR     delay1s      ; 1초 딜레이
+            BRA     MainLoop     ; 메인 루프로 돌아가 반복
+
+; ********** 서브루틴 섹션 (Subroutine Section) ******************
+
+; --- 1 바이트를 2개의 ASCII 문자로 변환하는 서브루틴 ---
+byte2ASCII:
+            PSHA                 ; A 레지스터 값 임시 저장
+            JSR     leftHLF      ; 상위 4비트 변환
+            STAA    ASCII_BUF    ; 첫 번째 문자를 버퍼에 저장
+            PULA                 ; 원래 A 값 복원
+            JSR     rightHLF     ; 하위 4비트 변환
+            STAA    ASCII_BUF+1  ; 두 번째 문자를 버퍼에 저장
+            CLR     ASCII_BUF+2  ; 문자열 끝에 NULL(0) 저장
+            RTS
+
+; --- 4비트(Nibble)를 ASCII로 변환 (상위) ---
+leftHLF:
+            LSRA
+            LSRA
+            LSRA
+            LSRA                 ; 상위 4비트를 하위로 이동
+            BRA     toASCII_common
+
+; --- 4비트(Nibble)를 ASCII로 변환 (하위) ---
+rightHLF:
+toASCII_common:
+            ANDA    #$0F         ; 하위 4비트만 남김
+            ADDA    #$30         ; '0'~'9'에 대한 ASCII 값으로 변환
+            CMPA    #$39
+            BLE     out
+            ADDA    #$07         ; 'A'~'F'에 대한 보정
+out:        RTS
+
+; --- 1초 딜레이 서브루틴 ---
+delay1s:
+            LDY     #20          ; 50ms * 20 = 1000ms = 1s
+d1s_loop:
+            LDX     #50000       ; 약 50ms 딜레이 루프
+d50ms_loop:
+            DEX
+            BNE     d50ms_loop
+            DBNE    Y, d1s_loop
+            RTS
+
+; ----------- LCD 제어 기본 서브루틴들 (랩 매뉴얼 제공 코드) -----------
+initLCD:
+            BSET    DDRS,%11110000 ; PS7-PS4 출력 설정
+            BSET    DDRE,LCD_E|LCD_RS ; PE7, PE4 출력 설정
+            LDY     #40          ; 2ms (50us * 40) 딜레이
+            JSR     del_50us
+            LDAA    #$28         ; 4-bit 모드, 2-line 디스플레이
+            JSR     cmd2LCD
+            LDAA    #$0C         ; 디스플레이 ON, 커서 OFF
+            JSR     cmd2LCD
+            LDAA    #$06         ; 엔트리 모드 설정
+            JSR     cmd2LCD
+            RTS
+
+clrLCD:
+            LDAA    #$01         ; 화면 클리어 명령어
+            JSR     cmd2LCD
+            LDY     #40          ; 긴 딜레이 (2ms)
+            JSR     del_50us
+            RTS
+
+putsLCD:                         ; X 레지스터가 가리키는 문자열 출력
+            LDAA    1,X+
+            BEQ     donePS
+            JSR     putcLCD
+            BRA     putsLCD
+donePS:     RTS
+
+putcLCD:                         ; A 레지스터의 문자 하나 출력
+            BSET    LCD_CNTR,LCD_RS ; 데이터 모드(RS=1)
+            JSR     dataMov
+            RTS
+
+cmd2LCD:                         ; A 레지스터의 명령어 하나 전송
+            BCLR    LCD_CNTR,LCD_RS ; 명령어 모드(RS=0)
+            JSR     dataMov
+            RTS
+
+dataMov:
+            PSHA                 ; A값 임시 저장
+            BSET    LCD_CNTR,LCD_E ; E=High
+            STAA    LCD_DAT      ; 상위 4비트 전송
+            BCLR    LCD_CNTR,LCD_E ; E=Low (High->Low 엣지에서 데이터 기록)
+            PULA                 ; A값 복원
+            LSLA                 ; 하위 4비트를 상위로 이동
+            LSLA
+            LSLA
+            LSLA
+            BSET    LCD_CNTR,LCD_E ; E=High
+            STAA    LCD_DAT      ; 하위 4비트 전송
+            BCLR    LCD_CNTR,LCD_E ; E=Low
+            LDY     #1           ; 50us 딜레이
+            JSR     del_50us
+            RTS
+
+del_50us:                        ; Y 레지스터 값 * 50us 딜레이
+            PSHX
+eloop:      LDX     #30          ; 약 50us를 만들기 위한 내부 루프
+iloop:      NOP
+            DBNE    X,iloop
+            DBNE    Y,eloop
+            PULX
+            RTS
+
+; --- 인터럽트 벡터 ---
+            ORG     $FFFE
+            FDB     Entry
